@@ -1646,7 +1646,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div style="font-size:11px;color:var(--sub);margin-bottom:8px" id="dl-hint">
       Для аркушів: вкажіть обидва розміри. Для рулонів: ширина береться зі складу, вказуйте тільки довжину висічки.
     </div>
-    <button class="btn-main" onclick="guardedClick(this, saveDielen)">➕ Додати / Оновити</button>
+    <div id="dl-edit-banner" style="display:none;background:#eef6f2;border:1px solid var(--accent);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px;align-items:center;justify-content:space-between">
+      <span>✏️ Редагується існуючий запис — зміни збережуться в нього, а не створять новий</span>
+      <button class="btn-outline" style="font-size:11px;padding:3px 8px;margin-left:8px" onclick="cancelEditDielen()">✕ Скасувати</button>
+    </div>
+    <button class="btn-main" id="dl-save-btn" onclick="guardedClick(this, saveDielen)">➕ Додати / Оновити</button>
     <div style="margin-top:12px" id="dielenList"></div>
   </div>
 
@@ -2020,7 +2024,7 @@ document.getElementById('dateBadge').textContent = new Date().toLocaleDateString
 // насправді ще стара сторінка). ЦЕЙ РЯДОК ПОТРІБНО МІНЯТИ ПРИ КОЖНІЙ
 // ВИДАЧІ ФАЙЛУ — дата/мітка тут має збігатися з тим, що я напишу у
 // відповіді, інакше користувач точно знатиме, що бачить не те, що я видав.
-const APP_BUILD = '2026-11-12 b2';
+const APP_BUILD = '2026-11-12 b3';
 document.getElementById('appBuildTag').textContent = 'build '+APP_BUILD;
 
 const params = new URLSearchParams(window.location.search);
@@ -4706,35 +4710,27 @@ function getDielenZag(rozmir,typ,kolir,shyr){
   // заповненого поля "Ширина") — падаємо на стару, ширино-незалежну
   // поведінку нижче, нічого не ламаючи для вже існуючих даних.
   const shyrNum = Number(String(shyr||'').replace(/[^0-9.]/g,''))||0;
-  if(shyrNum>0){
-    // width_mm — те саме поле "Ширина рулону/листа, мм" з форми "Формули"
-    // (saveDielen), 0 = запис ширино-незалежний (стара поведінка).
-    // 2026-11-12, уточнення користувача: штанцформа шириною W можна різати
-    // рулон/лист ШИРШИЙ або РІВНИЙ W (просто з більшими відходами), але
-    // ніколи вужчий за W — тому допустимі лише записи з width_mm<=shyrNum,
-    // а з них беремо НАЙБІЛЬШУ ширину (найближчу до фактичної, мінімум
-    // відходу); точний збіг автоматично виграє, бо він і найбільший з
-    // придатних.
-    const widthCandidates = matches.filter(function(d){
-      const w=Number(d.width_mm);
-      return w>0 && w<=shyrNum;
-    }).sort(function(a,b){ return Number(b.width_mm)-Number(a.width_mm); });
-    if(widthCandidates.length){
-      const bestWidth = Number(widthCandidates[0].width_mm);
-      const widthMatches = widthCandidates.filter(function(d){ return Number(d.width_mm)===bestWidth; });
-      if(kolir){
-        const kNorm=normK(kolir);
-        const wk = widthMatches.find(function(d){
-          if(!(Number(d.zag_per_sheet)>0)) return false;
-          const dk=normK(d.kolir||'');
-          return dk && (kNorm.includes(dk) || dk.includes(kNorm));
-        });
-        if(wk) return Number(wk.zag_per_sheet);
-      }
-      const w = widthMatches.find(function(d){return Number(d.zag_per_sheet)>0;});
-      if(w) return Number(w.zag_per_sheet);
-    }
+  // width_mm — те саме поле "Ширина рулону/листа, мм" з форми "Формули"
+  // (saveDielen), 0 = запис ширино-незалежний (підходить під будь-яку
+  // ширину — стара поведінка, не ламаємо її).
+  // 2026-11-12, уточнення користувача: (а) штанцформою шириною W можна
+  // різати рулон/лист ШИРШИЙ або РІВНИЙ W (просто з більшими відходами),
+  // але ніколи вужчий за W — тому запис з конкретною шириною допустимий,
+  // лише якщо width_mm<=shyrNum; (б) КОЛІР не повинен губитись через це —
+  // якщо є кілька записів під РІЗНУ ширину І РІЗНИЙ колір (напр. "Крафтовий"
+  // під вузький рулон і "Брендовані" під ширший лист для того самого
+  // розмір+тип), підбір ширини має working ТІЛЬКИ в межах одного й того ж
+  // кольору/категорії, а не підміняти колір просто тому, що в іншого
+  // запису ширина "ближча" — інакше можна помилково підхопити формулу
+  // Брендованих для звичайного некольорового замовлення.
+  function widthOk(d){
+    const w=Number(d.width_mm)||0;
+    if(!w) return true; // ширино-незалежний запис — завжди підходить
+    if(shyrNum<=0) return true; // викликач не передав ширину — стара поведінка (ширину ігноруємо)
+    return w<=shyrNum;
   }
+  const eligible = matches.filter(widthOk);
+  function byWidthDesc(a,b){ return (Number(b.width_mm)||0)-(Number(a.width_mm)||0); }
   if(kolir){
     const kNorm=normK(kolir);
     // 2026-10-01, реальний баг користувача: запис у Формулах зберігає
@@ -4744,17 +4740,21 @@ function getDielenZag(rozmir,typ,kolir,shyr){
     // працювало, а "Брендовані (будь-який малюнок)" — ні (падало на
     // перший-ліпший запис, зазвичай рулонний). Той самий двосторонній
     // принцип, що вже виправлено в getDielen().
-    const withZagFiltered = matches.find(function(d){
+    const colorMatches = eligible.filter(function(d){
       if(!(Number(d.zag_per_sheet)>0)) return false;
       const dk=normK(d.kolir||'');
       return dk && (kNorm.includes(dk) || dk.includes(kNorm));
-    });
-    if(withZagFiltered) return Number(withZagFiltered.zag_per_sheet);
+    }).sort(byWidthDesc); // серед збігів по кольору — найближча (найбільша придатна) ширина
+    if(colorMatches.length) return Number(colorMatches[0].zag_per_sheet);
   }
-  const withZag = matches.find(function(d){return Number(d.zag_per_sheet)>0;});
-  if(withZag) return Number(withZag.zag_per_sheet);
-  // Немає ЖОДНОГО запису з "Заг/арк" для цього розміру/типу — повертаємо 0,
-  // виклики мають самі показати попередження користувачу, а не падати.
+  const withZagFiltered = eligible.filter(function(d){return Number(d.zag_per_sheet)>0;}).sort(byWidthDesc);
+  if(withZagFiltered.length) return Number(withZagFiltered[0].zag_per_sheet);
+  // Немає ЖОДНОГО придатного (за шириною) запису з "Заг/арк" — як останній
+  // відступ пробуємо серед УСІХ записів цього розмір+тип, ігноруючи ширину
+  // (старі дані без заповненого поля "Ширина" теж мають продовжувати
+  // працювати, навіть якщо формально вужчі за фактичний рулон).
+  const anyZag = matches.filter(function(d){return Number(d.zag_per_sheet)>0;}).sort(byWidthDesc);
+  if(anyZag.length) return Number(anyZag[0].zag_per_sheet);
   return 0;
 }
 function calcT(){calcAutoBOM();}
@@ -15755,6 +15755,41 @@ function renderDielenList(){
   }).join('');
 }
 
+// 2026-11-12: раніше "яку саме секцію оновити" вгадувалось за ЗБІГОМ
+// НОВИХ значень форми (розмір+тип+колір+ширина) з існуючими записами.
+// Реальний баг користувача: при РЕДАГУВАННІ запису, якщо саме ширину
+// (чи колір) і міняли — нові значення вже не збігались із жодним старим
+// записом, тож замість оновлення створювався ДРУГИЙ запис, а старий
+// лишався висіти "осиротілим". Тепер явно запам'ятовуємо, ЯКИЙ САМЕ
+// запис (його ОРИГІНАЛЬНИЙ ключ на момент відкриття редагування)
+// редагується — і якщо ключ змінився, старий запис видаляємо, а новий
+// додаємо окремо (а не намагаємось "вгадати" збіг за новими даними).
+let editingDielenOrig = null;
+
+function dielenKeysEqual(a,b){
+  return normK(a.rozmir||'')===normK(b.rozmir||'') &&
+    normK(a.typ||'')===normK(b.typ||'') &&
+    normK(a.kolir||'')===normK(b.kolir||'') &&
+    (Number(a.width_mm)||0)===(Number(b.width_mm)||0);
+}
+
+function resetDielenEditState(){
+  editingDielenOrig=null;
+  const banner=document.getElementById('dl-edit-banner');
+  if(banner) banner.style.display='none';
+  const btn=document.getElementById('dl-save-btn');
+  if(btn) btn.textContent='➕ Додати / Оновити';
+}
+
+function cancelEditDielen(){
+  resetDielenEditState();
+  ['dl-rozmir','dl-typ','dl-kolir','dl-width','dl-density','dl-val','dl-zag-per-sheet','dl-raw-form'].forEach(function(id){
+    const el=document.getElementById(id);
+    if(el) el.value='';
+  });
+  onDlTypChange();
+}
+
 async function saveDielen(){
   const rozmir=document.getElementById('dl-rozmir').value;
   const typ=document.getElementById('dl-typ').value;
@@ -15767,16 +15802,25 @@ async function saveDielen(){
     const widthMm=Number(document.getElementById('dl-width').value)||0;
     const densityGm2=Number(document.getElementById('dl-density').value)||0;
     const rawForm=document.getElementById('dl-raw-form').value||'';
+    const newKey={rozmir,typ,kolir,width_mm:widthMm};
+
+    if(editingDielenOrig && !dielenKeysEqual(editingDielenOrig, newKey)){
+      // Ключ при редагуванні змінився (напр. виправили ширину чи колір) —
+      // старий запис більше нічому не відповідає, тож прибираємо його
+      // окремим викликом, перш ніж зберегти нові значення як новий/оновлений
+      // запис за новим ключем.
+      await api('deleteDielen',{rozmir:editingDielenOrig.rozmir,typ:editingDielenOrig.typ,kolir:editingDielenOrig.kolir||'',width_mm:Number(editingDielenOrig.width_mm)||0});
+      const oldIdx=dielenData.findIndex(function(d){return dielenKeysEqual(d, editingDielenOrig);});
+      if(oldIdx>=0) dielenData.splice(oldIdx,1);
+    }
+
     const r=await api('saveDielen',{rozmir,typ,kolir,val,zag_per_sheet:zagPerSheet,width_mm:widthMm,density_gm2:densityGm2,raw_form:rawForm});
     if(r.status!=='ok') throw new Error(r.message||'Помилка збереження');
-    // 2026-11-12: ширина теж частина ключа (той самий принцип, що й на
-    // бекенді в saveDielen/deleteDielen) — інакше запис під ІНШУ ширину для
-    // того самого розмір+тип+колір перезаписав би вже існуючий замість
-    // створення окремого рядка.
-    const idx=dielenData.findIndex(function(d){return d.rozmir===rozmir&&d.typ===typ&&(d.kolir||'')===kolir&&(Number(d.width_mm)||0)===widthMm;});
+    const idx=dielenData.findIndex(function(d){return dielenKeysEqual(d, newKey);});
     if(idx>=0){dielenData[idx].val=val;dielenData[idx].zag_per_sheet=zagPerSheet;dielenData[idx].width_mm=widthMm;dielenData[idx].density_gm2=densityGm2;dielenData[idx].raw_form=rawForm;}
     else dielenData.push({rozmir,typ,kolir,val,zag_per_sheet:zagPerSheet,width_mm:widthMm,density_gm2:densityGm2,raw_form:rawForm});
     localStorage.setItem('cuplus_dielen',JSON.stringify(dielenData));
+    resetDielenEditState();
     renderDielenList();
     toast('✅ Збережено',false,true);
   }catch(e){toast('❌ '+e.message+' — можливо треба оновити Apps Script',true);}
@@ -15784,6 +15828,11 @@ async function saveDielen(){
 
 function editDielen(idx){
   const d=dielenData[idx];
+  editingDielenOrig={rozmir:d.rozmir||'',typ:d.typ||'',kolir:d.kolir||'',width_mm:Number(d.width_mm)||0};
+  const banner=document.getElementById('dl-edit-banner');
+  if(banner) banner.style.display='flex';
+  const btn=document.getElementById('dl-save-btn');
+  if(btn) btn.textContent='💾 Зберегти зміни';
   document.getElementById('dl-rozmir').value=d.rozmir||'';
   document.getElementById('dl-typ').value=d.typ||'';
   document.getElementById('dl-kolir').value=d.kolir||'';
@@ -15803,6 +15852,7 @@ async function deleteDielen(idx){
     // випадково зачепити ІНШИЙ рядок з тим самим розмір+тип+колір, але під
     // іншу ширину (та сама правка, що й на бекенді).
     await api('deleteDielen',{rozmir:d.rozmir,typ:d.typ,kolir:d.kolir||'',width_mm:Number(d.width_mm)||0});
+    if(editingDielenOrig && dielenKeysEqual(editingDielenOrig, d)) resetDielenEditState();
     dielenData.splice(idx,1);
     localStorage.setItem('cuplus_dielen',JSON.stringify(dielenData));
     renderDielenList();
@@ -15869,46 +15919,40 @@ function getDielen(rozmir, typ, kolir, shyr){
   // саме під цю ширину; якщо такого нема (старі записи без поля "Ширина")
   // — падаємо на стару, ширино-незалежну поведінку нижче.
   const shyrNum = Number(String(shyr||'').replace(/[^0-9.]/g,''))||0;
-  if(shyrNum>0){
-    // 2026-11-12, уточнення користувача: штанцформа шириною W можна різати
-    // рулон/лист ШИРШИЙ або РІВНИЙ W (з більшими відходами), але ніколи
-    // вужчий за W — тож допустимі лише width_mm<=shyrNum, і з них береться
-    // НАЙБІЛЬША ширина (найближча до фактичної, мінімум відходу); точний
-    // збіг автоматично виграє, бо він і найбільший з придатних.
-    const widthCandidates = matches.filter(function(d){
-      const w=Number(d.width_mm);
-      return w>0 && w<=shyrNum;
-    }).sort(function(a,b){ return Number(b.width_mm)-Number(a.width_mm); });
-    if(widthCandidates.length){
-      const bestWidth = Number(widthCandidates[0].width_mm);
-      const widthMatches = widthCandidates.filter(function(d){ return Number(d.width_mm)===bestWidth; });
-      if(kolir){
-        const kNorm=normK(kolir);
-        const wk = widthMatches.find(function(d){
-          const dk=normK(d.kolir||'');
-          return dk && (kNorm.includes(dk) || dk.includes(kNorm));
-        });
-        if(wk) return wk.val;
-      }
-      const wNoKolir = widthMatches.find(function(d){return !d.kolir;});
-      if(wNoKolir) return wNoKolir.val;
-      return widthMatches[0].val;
-    }
+  // 2026-11-12, уточнення користувача: (а) штанцформою шириною W можна
+  // різати рулон/лист ШИРШИЙ або РІВНИЙ W (з більшими відходами), але
+  // ніколи вужчий за W — тому запис з конкретною шириною допустимий, лише
+  // якщо width_mm<=shyrNum; (б) КОЛІР не повинен губитись через це —
+  // підбір за шириною має працювати ТІЛЬКИ в межах одного й того ж
+  // кольору/категорії (напр. "Крафтовий" під вузький рулон і "Брендовані"
+  // під ширший лист — для того самого розмір+тип), а не підміняти колір
+  // лише тому, що в іншого запису ширина "ближча".
+  function widthOkFull(d){
+    const w=Number(d.width_mm)||0;
+    if(!w) return true; // ширино-незалежний запис — завжди підходить
+    if(shyrNum<=0) return true; // ширину не передали — стара поведінка
+    return w<=shyrNum;
   }
+  const eligible = matches.filter(widthOkFull);
+  function byWidthDescFull(a,b){ return (Number(b.width_mm)||0)-(Number(a.width_mm)||0); }
   if(kolir){
     const kNorm=normK(kolir);
     // Двосторонній підрядок: запис у Формулах зазвичай короткий тег
     // ("Брендовані", без деталей клієнта/малюнку), а виклик часто передає
     // повний колір ("Брендовані (КлієнтX)") — короткий не може "містити"
     // довгий, перевіряємо обидва напрямки.
-    const withKolir = matches.find(function(d){
+    const colorMatches = eligible.filter(function(d){
       const dk=normK(d.kolir||'');
       return dk && (kNorm.includes(dk) || dk.includes(kNorm));
-    });
-    if(withKolir) return withKolir.val;
+    }).sort(byWidthDescFull);
+    if(colorMatches.length) return colorMatches[0].val;
   }
-  const withoutKolir = matches.find(function(d){return !d.kolir;});
-  if(withoutKolir) return withoutKolir.val;
+  const withoutKolir = eligible.filter(function(d){return !d.kolir;}).sort(byWidthDescFull);
+  if(withoutKolir.length) return withoutKolir[0].val;
+  if(eligible.length) return eligible.slice().sort(byWidthDescFull)[0].val;
+  // Немає ЖОДНОГО придатного (за шириною) запису — як останній відступ
+  // пробуємо серед УСІХ записів цього розмір+тип, ігноруючи ширину (старі
+  // дані без заповненого поля "Ширина" мають продовжувати працювати).
   return matches.length ? matches[0].val : null;
 }
 
